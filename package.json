@@ -1,0 +1,24 @@
+{
+  "name": "discord-ai",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "opencode serve で起動した AI agent に作業を依頼するクライアント（将来 Discord bot 化予定）",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "cli": "tsx src/cli.ts",
+    "bot": "tsx src/discord/bot.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@opencode-ai/sdk": "latest",
+    "discord.js": "^14.16.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}

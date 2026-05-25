@@ -1,0 +1,47 @@
+services:
+  # ホストの opencode serve をコンテナ化したもの。
+  opencode:
+    build: ./opencode
+    env_file:
+      # LITELLM_BASE_URL / LITELLM_API_KEY を注入（opencode.json から {env:...} で参照）。
+      - .env
+    environment:
+      OPENCODE_CONFIG: /config/opencode.json
+      XDG_DATA_HOME: /data
+    volumes:
+      # プロバイダ設定（API キーは含まず env 置換）。
+      - ./opencode/opencode.json:/config/opencode.json:ro
+      # セッション DB を永続化（thread→session マッピングの参照先を保持）。
+      - opencode-data:/data
+    # ポートは公開しない（同一 compose ネットワーク内の bot からのみ到達）。
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:4096/global/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+
+  bot:
+    build: .
+    env_file:
+      - .env
+    environment:
+      # 同一ネットワーク内の opencode サービスへ接続（env_file の値より優先）。
+      OPENCODE_BASE_URL: "http://opencode:4096"
+    depends_on:
+      opencode:
+        condition: service_healthy
+    volumes:
+      # thread_id ↔ session_id のマッピングをホスト側に永続化。
+      - ./.data:/app/.data
+    restart: unless-stopped
+
+volumes:
+  opencode-data:
