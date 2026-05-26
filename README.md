@@ -17,6 +17,8 @@ Discord ──(メッセージ)──▶ bot ──HTTP──▶ opencode serve 
 - **bot**: `discord.js` で対象チャンネルを監視 → スレッド作成 → opencode に問い合わせ → スレッドへ応答。
 - **opencode**: `opencode serve`（headless HTTP サーバ）。litellm 互換エンドポイントにアクセスして推論。
 - **会話の継続**: 1 Discord スレッド = 1 opencode セッション。対応表（`thread_id ↔ session_id`）を `.data/thread-sessions.json` に永続化するため、再起動後も会話が続く。
+- **画像の添付**: メッセージに添付された画像（本文なしの画像のみの投稿も可）をダウンロードし、base64 data URL に変換して opencode へ渡す。モデル側で画像入力が有効である必要がある（`opencode.json` の `modalities` 参照）。
+- **Web 検索（MCP）**: opencode に SearXNG の remote MCP を接続しており、AI が必要に応じて Web 検索を行える。
 
 ### コンポーネント対応表
 
@@ -67,6 +69,9 @@ cp .env.example .env
 ### 3. モデル設定
 
 opencode が使うプロバイダ／モデルは `opencode/opencode.json` で定義。API キーは `{env:LITELLM_API_KEY}` 置換で実行時に注入するため、**このファイルに秘密情報は書かない**。
+
+- **画像対応**: 画像を扱うには各モデルに `"attachment": true` と `"modalities": { "input": ["text", "image"], ... }` を設定する（既定モデルは設定済み）。画像入力に対応していないモデルでは添付が無視される。
+- **MCP**: `mcp` セクションで外部ツールを接続できる。既定では SearXNG の remote MCP（Web 検索）を有効化している。不要なら `enabled: false` にする。
 
 ---
 

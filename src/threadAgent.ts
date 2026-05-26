@@ -1,5 +1,11 @@
-import { AgentService, type AgentServiceOptions } from "./opencode/agent.js";
+import {
+  AgentService,
+  type AgentServiceOptions,
+  type AttachmentInput,
+} from "./opencode/agent.js";
 import { ThreadSessionStore } from "./store/threadSessionStore.js";
+
+export type { AttachmentInput };
 
 export interface ThreadAgentOptions extends AgentServiceOptions {
   /** マッピングの永続化先。未指定なら既定パス。 */
@@ -30,11 +36,16 @@ export class ThreadAgent {
    * 初回は opencode セッションを作成して thread_id に紐づけ、以降は同一セッションを再利用する。
    * @param title 新規セッション作成時のタイトル（任意。一覧での識別用）。
    */
-  async ask(threadId: string, text: string, title?: string): Promise<string> {
+  async ask(
+    threadId: string,
+    text: string,
+    attachments: AttachmentInput[] = [],
+    title?: string,
+  ): Promise<string> {
     const sessionId = await this.store.getOrCreate(threadId, () =>
       this.agent.createSession(title ?? `discord-thread:${threadId}`),
     );
-    return this.agent.ask(sessionId, text);
+    return this.agent.ask(sessionId, text, attachments);
   }
 
   /** スレッドに紐づくセッション ID を返す（未紐づけなら undefined）。 */

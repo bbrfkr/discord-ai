@@ -6,6 +6,15 @@ export interface ModelRef {
   modelID: string;
 }
 
+/** ask に渡す添付ファイル（Discord 非依存の素のデータ）。 */
+export interface AttachmentInput {
+  /** ダウンロード元 URL（例: Discord CDN URL）。 */
+  url: string;
+  /** content-type。不明時はフォールバック値（例: application/octet-stream）。 */
+  mime: string;
+  filename?: string;
+}
+
 export interface AgentServiceOptions {
   /** 接続先。未指定なら env / 既定値。 */
   baseUrl?: string;
@@ -42,12 +51,30 @@ export class AgentService {
    * 指定セッションにプロンプトを送り、完了まで待って応答テキストを返す（同期）。
    * 同じ sessionId を渡し続ければ会話コンテキストが継続する。
    */
-  async ask(sessionId: string, text: string): Promise<string> {
+  async ask(
+    sessionId: string,
+    text: string,
+    attachments: AttachmentInput[] = [],
+  ): Promise<string> {
+    // 添付はダウンロードして base64 data URL 化する（opencode はリモート URL を受け付けない）。
+    const fileParts = await Promise.all(
+      attachments.map(async (a) => ({
+        type: "file" as const,
+        mime: a.mime,
+        ...(a.filename ? { filename: a.filename } : {}),
+        url: await toDataUrl(a.url, a.mime),
+      })),
+    );
+    const parts = [
+      ...(text.trim() ? [{ type: "text" as const, text }] : []),
+      ...fileParts,
+    ];
+
     const res = await this.client.session.prompt({
       path: { id: sessionId },
       body: {
         ...(this.model ? { model: this.model } : {}),
-        parts: [{ type: "text", text }],
+        parts,
       },
     });
 
@@ -80,6 +107,16 @@ function unwrap<T>(res: { data?: T; error?: unknown }): T {
     throw new Error("opencode API returned no data");
   }
   return res.data;
+}
+
+/** URL からファイルを取得し、base64 の data URL に変換する。 */
+async function toDataUrl(url: string, mime: string): Promise<string> {
+  const res = await fetch(url);
+  if (!res.ok) {
+    throw new Error(`添付ファイルの取得に失敗しました: ${res.status}`);
+  }
+  const buf = Buffer.from(await res.arrayBuffer());
+  return `data:${mime};base64,${buf.toString("base64")}`;
 }
 
 /** message parts から text タイプを連結して取り出す。 */

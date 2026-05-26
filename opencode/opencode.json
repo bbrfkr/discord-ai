@@ -10,13 +10,24 @@
         "apiKey": "{env:LITELLM_API_KEY}"
       },
       "models": {
-        "bbrfkr-llm-larget": {
-          "name": "large"
+        "bbrfkr-llm-large": {
+          "name": "large",
+          "attachment": true,
+          "modalities": { "input": ["text", "image"], "output": ["text"] }
         },
         "bbrfkr-llm-medium": {
-          "name": "medium"
+          "name": "medium",
+          "attachment": true,
+          "modalities": { "input": ["text", "image"], "output": ["text"] }
         }
       }
+    }
+  },
+  "mcp": {
+    "searxng": {
+      "type": "remote",
+      "url": "https://searxng.external.dynamis.bbrfkr.net/mcp",
+      "enabled": true
     }
   }
 }

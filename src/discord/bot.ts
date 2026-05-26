@@ -12,7 +12,7 @@ import {
   Message,
   type SendableChannels,
 } from "discord.js";
-import { ThreadAgent } from "../threadAgent.js";
+import { ThreadAgent, type AttachmentInput } from "../threadAgent.js";
 import { deriveThreadName, splitForDiscord } from "./format.js";
 
 const token = requireEnv("DISCORD_TOKEN");
@@ -37,10 +37,20 @@ client.once(Events.ClientReady, (c) => {
 client.on(Events.MessageCreate, async (message) => {
   // 自分や他 bot の発言は無視（無限ループ防止）。
   if (message.author.bot) return;
-  if (!message.content.trim()) return;
+  // 本文も添付も無いメッセージは無視（画像だけの投稿は処理する）。
+  if (!message.content.trim() && message.attachments.size === 0) return;
 
   try {
     const channel = message.channel;
+
+    // Discord の添付を、OpenCode へ渡す素のデータへ変換。
+    const attachments: AttachmentInput[] = [
+      ...message.attachments.values(),
+    ].map((a) => ({
+      url: a.url,
+      mime: a.contentType ?? "application/octet-stream",
+      filename: a.name ?? undefined,
+    }));
 
     // ケースA: 対象チャンネル直下への投稿 → スレッドを作って会話を開始。
     if (channel.id === targetChannelId && !channel.isThread()) {
@@ -48,13 +58,13 @@ client.on(Events.MessageCreate, async (message) => {
         name: deriveThreadName(message.content),
         autoArchiveDuration: 1440, // 24時間
       });
-      await respond(thread, thread.id, message.content);
+      await respond(thread, thread.id, message.content, attachments);
       return;
     }
 
     // ケースB: 対象チャンネル配下のスレッド内での投稿 → 同じセッションで継続。
     if (channel.isThread() && channel.parentId === targetChannelId) {
-      await respond(channel, channel.id, message.content);
+      await respond(channel, channel.id, message.content, attachments);
       return;
     }
   } catch (err) {
@@ -74,10 +84,11 @@ async function respond(
   channel: SendableChannels,
   threadId: string,
   text: string,
+  attachments: AttachmentInput[] = [],
 ): Promise<void> {
   const typing = startTyping(channel);
   try {
-    const answer = await threadAgent.ask(threadId, text);
+    const answer = await threadAgent.ask(threadId, text, attachments);
     const chunks = splitForDiscord(answer);
     if (chunks.length === 0) {
       await channel.send("（応答が空でした）");
