@@ -8,12 +8,20 @@ services:
     environment:
       OPENCODE_CONFIG: /config/opencode.json
       XDG_DATA_HOME: /data
+      # GH_TOKEN は env_file(.env) から渡され、gh が自動で読み取る（ブラウザ認証不要）。
+      # コミット著者情報は git ネイティブの env で注入する。.env の 1 組を 4 変数に展開。
+      GIT_AUTHOR_NAME: ${GIT_USER_NAME:?GIT_USER_NAME is required (set it in .env)}
+      GIT_AUTHOR_EMAIL: ${GIT_USER_EMAIL:?GIT_USER_EMAIL is required (set it in .env)}
+      GIT_COMMITTER_NAME: ${GIT_USER_NAME}
+      GIT_COMMITTER_EMAIL: ${GIT_USER_EMAIL}
     volumes:
       # プロバイダ設定（API キーは含まず env 置換）。
       - ./opencode/opencode.json:/config/opencode.json:ro
       # セッション DB を永続化（thread→session マッピングの参照先を保持）。
       - opencode-data:/data
-    # ポートは公開しない（同一 compose ネットワーク内の bot からのみ到達）。
+      # PKM vault（Obsidian）を読み書き可能でマウント。これが opencode のプロジェクトルート。
+      # ホスト側パスは .env の PKM_VAULT_PATH で指定（必須）。
+      - ${DOCS_REPO_PATH:?DOCS_REPO_PATH is required (set it in .env)}:/root/project
     healthcheck:
       test:
         [
