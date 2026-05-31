@@ -2,10 +2,18 @@ import {
   AgentService,
   type AgentServiceOptions,
   type AttachmentInput,
+  type OpencodeEvent,
+  type PermissionRequest,
+  type PermissionResponse,
 } from "./opencode/agent.js";
 import { ThreadSessionStore } from "./store/threadSessionStore.js";
 
-export type { AttachmentInput };
+export type {
+  AttachmentInput,
+  OpencodeEvent,
+  PermissionRequest,
+  PermissionResponse,
+};
 
 export interface ThreadAgentOptions extends AgentServiceOptions {
   /** マッピングの永続化先。未指定なら既定パス。 */
@@ -51,6 +59,25 @@ export class ThreadAgent {
   /** スレッドに紐づくセッション ID を返す（未紐づけなら undefined）。 */
   getSessionId(threadId: string): Promise<string | undefined> {
     return this.store.get(threadId);
+  }
+
+  /** セッション ID から逆引きでスレッド ID を返す（permission 通知の宛先解決用）。 */
+  findThreadBySession(sessionId: string): Promise<string | undefined> {
+    return this.store.findThreadBySession(sessionId);
+  }
+
+  /** サーバのイベントストリーム（SSE）を購読する。 */
+  events(): AsyncGenerator<OpencodeEvent> {
+    return this.agent.events();
+  }
+
+  /** 保留中の permission に応答する（許可/拒否）。 */
+  respondPermission(
+    sessionId: string,
+    permissionID: string,
+    response: PermissionResponse,
+  ): Promise<void> {
+    return this.agent.respondPermission(sessionId, permissionID, response);
   }
 
   /** スレッドの紐づけを解除する（アーカイブ/削除時など）。 */

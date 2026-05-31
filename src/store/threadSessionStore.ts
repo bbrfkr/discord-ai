@@ -43,6 +43,19 @@ export class ThreadSessionStore {
     return this.map.get(threadId);
   }
 
+  /**
+   * セッション ID から逆引きでスレッド ID を返す（無ければ undefined）。
+   * permission イベントは sessionID しか持たないため、どのスレッドへ通知すべきかを
+   * 解決するのに使う（thread↔session は 1:1 なので最初の一致を返せばよい）。
+   */
+  async findThreadBySession(sessionId: string): Promise<string | undefined> {
+    await this.load();
+    for (const [threadId, sid] of this.map) {
+      if (sid === sessionId) return threadId;
+    }
+    return undefined;
+  }
+
   /** 対応づけを保存する。 */
   async set(threadId: string, sessionId: string): Promise<void> {
     await this.load();

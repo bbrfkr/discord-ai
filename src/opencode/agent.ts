@@ -15,6 +15,39 @@ export interface AttachmentInput {
   filename?: string;
 }
 
+/** permission への応答。once=今回だけ許可 / always=以後同種も許可 / reject=拒否。 */
+export type PermissionResponse = "once" | "always" | "reject";
+
+/**
+ * opencode が tool 実行の許可待ちで送ってくるイベント（type: "permission.asked"）。
+ *
+ * 注意: @opencode-ai/sdk の生成型は別名（permission.updated / Permission）になっているが、
+ * サーバ実体（opencode serve）がワイヤに流す実際の type は "permission.asked"、payload は
+ * 下記 PermissionRequest 形状である（バイナリ検証済み）。SDK の型に頼らず実体に合わせて扱う。
+ */
+export interface PermissionRequest {
+  /** per_… 形式。応答時の permissionID として使う。 */
+  id: string;
+  /** ses_… 形式。どのセッション（=スレッド）の許可要求か。 */
+  sessionID: string;
+  /** 要求された操作の種別（"bash" / "edit" / "webfetch" など）。 */
+  permission: string;
+  /** 対象パターン（bash ならコマンド文字列など）。 */
+  patterns?: string[];
+  metadata?: Record<string, unknown>;
+  always?: string[];
+  tool?: { messageID: string; callID: string };
+}
+
+/**
+ * サーバが SSE で流すイベントの最小形（type と任意の properties）。
+ * SDK の生成型は実体とずれている箇所があるため、型に頼らず実体に合わせて緩く扱う。
+ */
+export interface OpencodeEvent {
+  type: string;
+  properties?: Record<string, unknown>;
+}
+
 export interface AgentServiceOptions {
   /** 接続先。未指定なら env / 既定値。 */
   baseUrl?: string;
@@ -85,6 +118,35 @@ export class AgentService {
   /** 設定中のモデル（未設定時は undefined = サーバ既定）。ログ表示用。 */
   get currentModel(): ModelRef | undefined {
     return this.model;
+  }
+
+  /**
+   * サーバのイベントストリーム（SSE: GET /event）を購読し、各イベントを yield する。
+   *
+   * ask() は permission ゲートに当たると prompt の HTTP 応答が返らずブロックするため、
+   * 許可要求（permission.asked）はこの独立したストリームで受け取り、respondPermission() で
+   * 応答して解除する。ストリームが切れたら呼び出し側で再購読する想定（1接続ぶんを流すだけ）。
+   */
+  async *events(): AsyncGenerator<OpencodeEvent> {
+    const res = await this.client.event.subscribe();
+    for await (const event of res.stream) {
+      // SDK の型は実体とずれているため unknown 経由で実体形状に寄せる。
+      const ev = event as unknown as OpencodeEvent;
+      if (ev && typeof ev.type === "string") yield ev;
+    }
+  }
+
+  /** 保留中の permission に応答する（許可/拒否）。 */
+  async respondPermission(
+    sessionId: string,
+    permissionID: string,
+    response: PermissionResponse,
+  ): Promise<void> {
+    const res = await this.client.postSessionIdPermissionsPermissionId({
+      path: { id: sessionId, permissionID },
+      body: { response },
+    });
+    unwrap(res);
   }
 }
 

@@ -21,6 +21,7 @@ Discord ──(メッセージ)──▶ bot ──HTTP(OPENCODE_BASE_URL)──
 - **opencode-server**: 別デプロイ。`OPENCODE_BASE_URL` で到達する（このリポジトリの管理対象外）。
 - **会話の継続**: 1 Discord スレッド = 1 opencode セッション。対応表（`thread_id ↔ session_id`）を `.data/thread-sessions.json` に永続化するため、再起動後も会話が続く。
 - **画像の添付**: メッセージに添付された画像（本文なしの画像のみの投稿も可）をダウンロードし、base64 data URL に変換して opencode へ渡す。モデル側で画像入力が有効である必要がある。
+- **許可ゲート（permission）の橋渡し**: opencode は `bash` 実行やファイル編集など許可が要る操作で、応答を返さず許可待ちでブロックする。bot はイベントストリーム（SSE）で許可要求を受け取り、対応スレッドへ「承認/拒否」を促す。詳細は[許可リクエストへの応答](#許可リクエストへの応答)を参照。
 
 ### コンポーネント対応表
 
@@ -29,8 +30,36 @@ Discord ──(メッセージ)──▶ bot ──HTTP(OPENCODE_BASE_URL)──
 | `AgentService` | opencode SDK のラッパ（セッション作成・プロンプト送信） | `src/opencode/agent.ts`, `src/opencode/client.ts` |
 | `ThreadSessionStore` | `thread_id ↔ session_id` を JSON で永続化 | `src/store/threadSessionStore.ts` |
 | `ThreadAgent` | 上記2つを束ね「スレッド単位の会話」を提供 | `src/threadAgent.ts` |
+| `PermissionGate` | 許可要求（SSE）を購読しスレッドへ通知・返信で応答 | `src/discord/permissionGate.ts` |
 | Discord bot | チャンネル監視・スレッド応答 | `src/discord/bot.ts`, `src/discord/format.ts` |
 | 動作確認 CLI | opencode 単体の疎通テスト | `src/cli.ts` |
+
+---
+
+## 許可リクエストへの応答
+
+opencode は `bash` コマンドの実行やファイル編集など、サーバ側の `permission` 設定で許可が必要とされた操作に当たると、その許可が解決されるまで**プロンプトの HTTP 応答を返さずブロックする**。クライアントが応答しない限りセッションは止まったままになる。
+
+bot はこれを次のように橋渡しする（実装: `src/discord/permissionGate.ts`）。
+
+1. 起動時にイベントストリーム（`GET /event`、SSE）を購読する。
+2. `permission.asked` イベントを受け取ると、`sessionID` から対応スレッドを逆引きし、そのスレッドへ許可要求（操作種別と対象、例: `bash` と実行コマンド）を投稿する。
+3. ユーザがそのスレッドに**返信コマンド**を送ると、許可応答に変換してサーバへ返し、ブロックを解除する。解除後は元の応答がそのままスレッドへ投稿される。
+
+### 返信コマンド
+
+許可待ちのスレッドでは、次の語（前後の空白は無視、英語も可）が応答として解釈される。
+
+| 返信 | 動作 | opencode への応答 |
+|---|---|---|
+| `承認` / `許可` / `approve` / `allow` / `ok` / `yes` | 今回だけ許可 | `once` |
+| `常に許可` / `常に承認` / `always` | 以後この種別は自動許可 | `always` |
+| `拒否` / `却下` / `deny` / `reject` / `no` | 実行しない | `reject` |
+
+- 許可待ちの間は、上記以外の返信は通常メッセージとして AI に転送されず、待機中である旨を案内する（進行中の処理に二重で問い合わせないため）。
+- 要求が失効（タイムアウト等）した場合は、セッションがアイドルに戻った時点で保留を自動的に破棄する。
+
+> 💡 そもそも許可を求める頻度を減らしたい場合は、**opencode-server 側**の `opencode.json` の `permission` 設定で、安全な操作を `allow`、危険な操作だけ `ask`/`deny` に振り分けるとよい（設定キー: `edit` / `bash` / `webfetch` など。`bash` はコマンドのパターン別指定も可能）。
 
 ---
 
