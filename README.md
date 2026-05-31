@@ -1,24 +1,26 @@
-# discord-ai
+# discord-bot
 
 Discord の特定チャンネルへの投稿を起点にスレッドを立て、[opencode](https://opencode.ai) の AI agent が応答する bot です。
-bot と opencode サーバの両方を Docker / docker compose で起動できます。
+opencode サーバー本体は同梱せず、別デプロイの **[opencode-server](https://github.com/bbrfkr/opencode-server)** に `OPENCODE_BASE_URL` で HTTP 接続します。
+
+> サーバー（opencode serve + n8n 短命トークンによるセキュアな git/gh 認証 + defuddle）は opencode-server 側に集約されています。
+> この bot は「opencode サーバーを使うクライアント」の 1 つで、サーバーの起動・管理は行いません。
 
 ---
 
 ## アーキテクチャ
 
 ```
-Discord ──(メッセージ)──▶ bot ──HTTP──▶ opencode serve ──▶ litellm (OpenAI互換API)
-                          │                  │
-                  .data/ に              /data (named volume) に
-            thread↔session を保存      session DB を保存
+Discord ──(メッセージ)──▶ bot ──HTTP(OPENCODE_BASE_URL)──▶ opencode-server ──▶ litellm
+                          │
+                  .data/ に
+            thread↔session を保存
 ```
 
 - **bot**: `discord.js` で対象チャンネルを監視 → スレッド作成 → opencode に問い合わせ → スレッドへ応答。
-- **opencode**: `opencode serve`（headless HTTP サーバ）。litellm 互換エンドポイントにアクセスして推論。
+- **opencode-server**: 別デプロイ。`OPENCODE_BASE_URL` で到達する（このリポジトリの管理対象外）。
 - **会話の継続**: 1 Discord スレッド = 1 opencode セッション。対応表（`thread_id ↔ session_id`）を `.data/thread-sessions.json` に永続化するため、再起動後も会話が続く。
-- **画像の添付**: メッセージに添付された画像（本文なしの画像のみの投稿も可）をダウンロードし、base64 data URL に変換して opencode へ渡す。モデル側で画像入力が有効である必要がある（`opencode.json` の `modalities` 参照）。
-- **Web 検索（MCP）**: opencode に SearXNG の remote MCP を接続しており、AI が必要に応じて Web 検索を行える。
+- **画像の添付**: メッセージに添付された画像（本文なしの画像のみの投稿も可）をダウンロードし、base64 data URL に変換して opencode へ渡す。モデル側で画像入力が有効である必要がある。
 
 ### コンポーネント対応表
 
@@ -35,8 +37,8 @@ Discord ──(メッセージ)──▶ bot ──HTTP──▶ opencode serve 
 ## 必要なもの
 
 - Docker / docker compose（OrbStack や Docker Desktop でも可）
+- 到達可能な **opencode-server** のデプロイ（`OPENCODE_BASE_URL`）
 - Discord Bot のトークンと、監視対象チャンネルの ID
-- litellm など OpenAI 互換 API のエンドポイントと API キー
 - （ローカル実行する場合のみ）Node.js 24 以上
 
 ---
@@ -53,14 +55,12 @@ cp .env.example .env
 
 | 変数 | 必須 | 説明 |
 |---|---|---|
+| `OPENCODE_BASE_URL` | ✅ | 接続先 opencode-server の URL（例 `http://host:4096`） |
 | `DISCORD_TOKEN` | ✅ | Bot トークン（Developer Portal > Bot > Reset Token） |
 | `DISCORD_TARGET_CHANNEL_ID` | ✅ | 監視対象チャンネル ID（開発者モードON → 右クリック → IDをコピー） |
-| `LITELLM_BASE_URL` | ✅(compose) | OpenAI 互換エンドポイント（例 `https://.../v1`） |
-| `LITELLM_API_KEY` | ✅(compose) | 上記の API キー |
-| `N8N_WEBHOOK_BASE_URL` | ✅(compose) | git 認証用 n8n ブローカーの Webhook 親 URL（`/github/token`・`/github/revoke` の手前、`/webhook` まで） |
-| `GIT_USER_NAME` / `GIT_USER_EMAIL` | ✅(compose) | AI が作るコミットの著者情報 |
-| `OPENCODE_BASE_URL` | – | ローカル実行時の opencode 接続先。compose では自動上書き |
-| `OPENCODE_PROVIDER_ID` / `OPENCODE_MODEL_ID` | – | 使用モデルの上書き。未指定なら `opencode.json` の既定 |
+| `OPENCODE_PROVIDER_ID` / `OPENCODE_MODEL_ID` | – | 使用モデルの上書き。未指定ならサーバの既定 |
+
+> litellm の接続情報やモデル定義、git/gh 認証（n8n 短命トークン）は **opencode-server 側**の設定。bot には不要。
 
 ### 2. Discord Bot の準備
 
@@ -68,22 +68,17 @@ cp .env.example .env
 2. **Bot 設定の Privileged Gateway Intents で `MESSAGE CONTENT INTENT` を ON**（本文読み取りに必須）。
 3. **OAuth2 > URL Generator** で scope=`bot`、権限に `View Channels` / `Send Messages` / `Create Public Threads` / `Send Messages in Threads` を付与し、生成 URL からサーバーに招待。
 
-### 3. モデル設定
-
-opencode が使うプロバイダ／モデルは `opencode/opencode.json` で定義。API キーは `{env:LITELLM_API_KEY}` 置換で実行時に注入するため、**このファイルに秘密情報は書かない**。
-
-- **画像対応**: 画像を扱うには各モデルに `"attachment": true` と `"modalities": { "input": ["text", "image"], ... }` を設定する（既定モデルは設定済み）。画像入力に対応していないモデルでは添付が無視される。
-- **MCP**: `mcp` セクションで外部ツールを接続できる。既定では SearXNG の remote MCP（Web 検索）を有効化している。不要なら `enabled: false` にする。
-
 ---
 
 ## 起動（docker compose・推奨）
+
+事前に opencode-server を起動し、`OPENCODE_BASE_URL` がそこへ到達できることを確認しておく。
 
 ```bash
 docker compose up -d --build      # ビルドして起動
 docker compose logs -f bot        # bot のログ追従。"logged in as ..." が出れば成功
 docker compose ps                 # 稼働状況
-docker compose down               # 停止（session DB の volume は保持）
+docker compose down               # 停止
 ```
 
 起動後、対象チャンネルに投稿するとスレッドが立ち AI が応答する。スレッド内で続けて話しかければ会話が継続する。
@@ -92,7 +87,7 @@ docker compose down               # 停止（session DB の volume は保持）
 
 ## ローカル実行（開発・デバッグ用）
 
-ホストで `opencode serve` を起動している前提（`OPENCODE_BASE_URL` をそれに合わせる）。
+`OPENCODE_BASE_URL` が到達可能な opencode-server を指している前提。
 
 ```bash
 npm install
@@ -119,32 +114,23 @@ npm run typecheck
 
 ```bash
 docker compose logs -f bot           # bot
-docker compose logs -f opencode      # opencode サーバ
 docker compose logs --since 1h bot   # 直近1時間
 ```
 
 ### 再起動 / 更新
 
 ```bash
-docker compose restart bot                  # bot だけ再起動
+docker compose restart bot                  # 再起動
 docker compose up -d --build                # コード変更を反映して再ビルド・再起動
-
-# opencode 本体や依存を最新化（イメージを作り直す）
-docker compose build --no-cache opencode
-docker compose up -d opencode
 ```
-
-> bot のコード変更は `--build` で反映される。`opencode-ai` のバージョンを上げたい場合は
-> `opencode/Dockerfile` の `npm install -g opencode-ai` を再ビルドする（必要ならバージョン固定推奨）。
 
 ### データの永続化とリセット
 
 | データ | 保存先 | リセット方法 |
 |---|---|---|
 | `thread_id ↔ session_id` | ホスト `./.data/thread-sessions.json` | ファイルを `{}` にするか削除 |
-| opencode セッション DB | named volume `opencode-data` | `docker compose down -v` または `docker volume rm discord-ai_opencode-data` |
 
-> ⚠️ 両者は連動している。opencode の DB を消すと既存スレッドの session ID が無効になるため、
+> ⚠️ opencode-server 側のセッション DB を消すと既存スレッドの session ID が無効になる。
 > 整合性を保つには `.data/thread-sessions.json` も合わせてリセットする。
 
 ### バックアップ
@@ -152,10 +138,6 @@ docker compose up -d opencode
 ```bash
 # マッピング（軽量・テキスト）
 cp .data/thread-sessions.json backup-$(date +%F).json
-
-# opencode セッション DB（volume をtar化）
-docker run --rm -v discord-ai_opencode-data:/data -v "$PWD":/backup \
-  busybox tar czf /backup/opencode-data-$(date +%F).tgz -C /data .
 ```
 
 ---
@@ -166,46 +148,15 @@ docker run --rm -v discord-ai_opencode-data:/data -v "$PWD":/backup \
 |---|---|
 | bot がメッセージに反応しない | `MESSAGE CONTENT INTENT` が ON か / `DISCORD_TARGET_CHANNEL_ID` が正しいか / bot がそのチャンネルを見える権限を持つか |
 | スレッドが作れない | bot に `Create Public Threads` 権限があるか |
-| 応答が `⚠️ AI への問い合わせに失敗` | `docker compose logs opencode` を確認。`LITELLM_API_KEY` / `LITELLM_BASE_URL` が正しいか |
-| opencode が unhealthy | `docker compose logs opencode` / litellm への到達性 / config の `{env:...}` が解決されているか |
-| ローカルで `cli` が繋がらない | ホストで `opencode serve` が起動しているか / `OPENCODE_BASE_URL` |
-
-`opencode` 単体の死活確認：
-
-```bash
-docker compose exec opencode node -e "fetch('http://127.0.0.1:4096/global/health').then(r=>r.json()).then(console.log)"
-```
+| 応答が `⚠️ AI への問い合わせに失敗` | `OPENCODE_BASE_URL` が正しいか / opencode-server が稼働・到達可能か |
+| ローカルで `cli` が繋がらない | opencode-server が起動しているか / `OPENCODE_BASE_URL` |
 
 ---
 
-## GitHub 連携（n8n ブローカー経由）
-
-AI に git の clone/pull/push を任せる際の認証は、**静的トークンをコンテナに持たせず**、n8n ブローカー
-（`github-token` ワークフロー）が都度発行する**短命トークン（GitHub App installation token・約1時間）**で行う。
-長命の秘密（App 秘密鍵）は n8n 側にだけ置き、opencode 側には短命トークンしか流さない設計。
-
-```
-git push / gh ──▶ opencode プラグイン(plugins/github-token.js)
-                   ├ pre  : POST /github/token  → /tmp/n8n-gh-token に短命トークンを発行
-                   │        （git は credential helper /usr/local/bin/git-credential-n8n 経由、
-                   │          gh は薄いラッパー /usr/local/bin/gh が GH_TOKEN として読み取り認証）
-                   └ post : POST /github/revoke → 失効・ファイル削除（コマンド完了直後）
-```
-
-- 発行・失効は **git の network 操作（push/pull/fetch/clone/ls-remote）と gh コマンド**を対象に自動で走る。
-  git 以外（commit/status 等）や gh 以外の bash では何もしない。
-- `gh`（GitHub CLI）も同じ仕組みで認証される。`gh` 実行時、薄いラッパー（`/usr/local/bin/gh`、PATH で実体
-  `/usr/bin/gh` より優先）が `/tmp/n8n-gh-token` を読んで `GH_TOKEN` にセットしてから実体 gh を呼ぶ。
-- 必要な設定は `N8N_WEBHOOK_BASE_URL` のみ（GitHub の秘密情報は不要）。
-- トークンは **チャット応答・ログ・コマンド文字列に出さない**。失効に失敗しても GitHub 仕様の1時間自動失効が backstop。
-- credential helper / gh ラッパーは `/tmp/n8n-gh-token` を読むだけの薄い受け渡し役で、n8n は一切叩かない（発行/失効はプラグインが担当）。
-
 ## セキュリティ上の注意
 
-- `.env` と `.data/` は `.gitignore` 済み。**API キー・Bot トークンは絶対にコミットしない。**
-- **GitHub の長命トークン/App 秘密鍵を opencode コンテナや `.env` に置かない**（git 認証は上記の n8n ブローカー経由の短命トークンで行う）。
-- `opencode/opencode.json` はキーを直書きせず `{env:...}` 参照のみ（リポジトリにもイメージにも秘密情報を残さない）。
-- opencode サーバはポートを公開せず、compose 内部ネットワークからのみ到達可能（外部公開する場合は `OPENCODE_SERVER_PASSWORD` 等の認証を検討）。
+- `.env` と `.data/` は `.gitignore` 済み。**Bot トークンは絶対にコミットしない。**
+- litellm の API キーや GitHub の秘密情報はこの bot には持たせない（すべて opencode-server 側に閉じている）。
 - Bot トークンが漏れた場合は Developer Portal で即 **Reset Token**。
 
 ---
@@ -213,12 +164,9 @@ git push / gh ──▶ opencode プラグイン(plugins/github-token.js)
 ## ディレクトリ構成
 
 ```
-discord-ai/
-├── docker-compose.yml        # opencode + bot の2サービス
+discord-bot/
+├── docker-compose.yml        # bot サービス（外部 opencode-server へ接続）
 ├── Dockerfile                # bot イメージ
-├── opencode/
-│   ├── Dockerfile            # opencode サーバイメージ
-│   └── opencode.json         # プロバイダ/モデル設定（秘密情報なし）
 ├── src/
 │   ├── cli.ts                # 動作確認 CLI
 │   ├── threadAgent.ts        # スレッド単位の会話層

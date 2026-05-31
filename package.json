@@ -1,9 +1,9 @@
 {
-  "name": "discord-ai",
+  "name": "discord-bot",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "opencode serve で起動した AI agent に作業を依頼するクライアント（将来 Discord bot 化予定）",
+  "description": "別デプロイの opencode-server に接続し、Discord チャンネルを起点に AI agent へ作業を依頼する Discord bot",
   "engines": {
     "node": ">=24"
   },
