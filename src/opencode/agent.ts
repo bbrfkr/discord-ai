@@ -1,4 +1,8 @@
-import { createClient, type OpencodeClient } from "./client.js";
+import {
+  createClient,
+  resolveBaseUrl,
+  type OpencodeClient,
+} from "./client.js";
 
 /** prompt 時に指定するモデル（providerID / modelID）。未指定ならサーバ既定。 */
 export interface ModelRef {
@@ -13,6 +17,72 @@ export interface AttachmentInput {
   /** content-type。不明時はフォールバック値（例: application/octet-stream）。 */
   mime: string;
   filename?: string;
+}
+
+/** permission への応答。once=今回だけ許可 / always=以後同種も許可 / reject=拒否。 */
+export type PermissionResponse = "once" | "always" | "reject";
+
+/**
+ * opencode が tool 実行の許可待ちで送ってくるイベント（type: "permission.asked"）。
+ *
+ * 注意: @opencode-ai/sdk の生成型は別名（permission.updated / Permission）になっているが、
+ * サーバ実体（opencode serve）がワイヤに流す実際の type は "permission.asked"、payload は
+ * 下記 PermissionRequest 形状である（バイナリ検証済み）。SDK の型に頼らず実体に合わせて扱う。
+ */
+export interface PermissionRequest {
+  /** per_… 形式。応答時の permissionID として使う。 */
+  id: string;
+  /** ses_… 形式。どのセッション（=スレッド）の許可要求か。 */
+  sessionID: string;
+  /** 要求された操作の種別（"bash" / "edit" / "webfetch" など）。 */
+  permission: string;
+  /** 対象パターン（bash ならコマンド文字列など）。 */
+  patterns?: string[];
+  metadata?: Record<string, unknown>;
+  always?: string[];
+  tool?: { messageID: string; callID: string };
+}
+
+/**
+ * サーバが SSE で流すイベントの最小形（type と任意の properties）。
+ * SDK の生成型は実体とずれている箇所があるため、型に頼らず実体に合わせて緩く扱う。
+ */
+export interface OpencodeEvent {
+  type: string;
+  properties?: Record<string, unknown>;
+}
+
+/** 質問の選択肢。 */
+export interface QuestionOption {
+  label: string;
+  description: string;
+}
+
+/** 単一の質問。 */
+export interface QuestionInfo {
+  question: string;
+  /** 短いラベル（30 文字以内）。 */
+  header: string;
+  options: QuestionOption[];
+  /** 複数選択可か。 */
+  multiple?: boolean;
+  /** 選択肢以外の自由入力を許すか。 */
+  custom?: boolean;
+}
+
+/**
+ * opencode が agent からユーザへ質問する際に送るイベント（type: "question.asked"）。
+ *
+ * 注意: permission と異なり @opencode-ai/sdk には question 用の型もメソッドも存在しない。
+ * イベントは SSE 生 JSON としてそのまま流れてくるので type 文字列で判定し、応答は
+ * 生 fetch（replyQuestion / rejectQuestion）で /question/{id}/reply・/reject を叩く。
+ */
+export interface QuestionRequest {
+  /** que_… 形式。応答時の requestID として使う。 */
+  id: string;
+  /** ses_… 形式。どのセッション（=スレッド）の質問か。 */
+  sessionID: string;
+  questions: QuestionInfo[];
 }
 
 export interface AgentServiceOptions {
@@ -32,8 +102,11 @@ export interface AgentServiceOptions {
 export class AgentService {
   private readonly client: OpencodeClient;
   private readonly model?: ModelRef;
+  /** SDK が未提供のエンドポイント（question 応答）を生 fetch で叩くための接続先。 */
+  private readonly baseUrl: string;
 
   constructor(options: AgentServiceOptions = {}) {
+    this.baseUrl = resolveBaseUrl(options.baseUrl);
     this.client = createClient(options.baseUrl);
     this.model = options.model ?? resolveModelFromEnv();
   }
@@ -85,6 +158,61 @@ export class AgentService {
   /** 設定中のモデル（未設定時は undefined = サーバ既定）。ログ表示用。 */
   get currentModel(): ModelRef | undefined {
     return this.model;
+  }
+
+  /**
+   * サーバのイベントストリーム（SSE: GET /event）を購読し、各イベントを yield する。
+   *
+   * ask() は permission ゲートに当たると prompt の HTTP 応答が返らずブロックするため、
+   * 許可要求（permission.asked）はこの独立したストリームで受け取り、respondPermission() で
+   * 応答して解除する。ストリームが切れたら呼び出し側で再購読する想定（1接続ぶんを流すだけ）。
+   */
+  async *events(): AsyncGenerator<OpencodeEvent> {
+    const res = await this.client.event.subscribe();
+    for await (const event of res.stream) {
+      // SDK の型は実体とずれているため unknown 経由で実体形状に寄せる。
+      const ev = event as unknown as OpencodeEvent;
+      if (ev && typeof ev.type === "string") yield ev;
+    }
+  }
+
+  /** 保留中の permission に応答する（許可/拒否）。 */
+  async respondPermission(
+    sessionId: string,
+    permissionID: string,
+    response: PermissionResponse,
+  ): Promise<void> {
+    const res = await this.client.postSessionIdPermissionsPermissionId({
+      path: { id: sessionId, permissionID },
+      body: { response },
+    });
+    unwrap(res);
+  }
+
+  /**
+   * 保留中の質問に回答する。answers は質問順に、各要素が「選択したラベル（自由入力時はその文字列）」の配列。
+   * SDK 未提供のため生 fetch で /question/{requestID}/reply を叩く。
+   */
+  async replyQuestion(requestID: string, answers: string[][]): Promise<void> {
+    await this.postJson(`/question/${requestID}/reply`, { answers });
+  }
+
+  /** 保留中の質問を取り消す（SDK 未提供のため生 fetch）。 */
+  async rejectQuestion(requestID: string): Promise<void> {
+    await this.postJson(`/question/${requestID}/reject`, {});
+  }
+
+  /** baseUrl 配下へ JSON を POST し、非 2xx は本文付きで投げる。 */
+  private async postJson(path: string, body: unknown): Promise<void> {
+    const res = await fetch(`${this.baseUrl}${path}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`opencode API error (${res.status} ${path}): ${text}`);
+    }
   }
 }
 

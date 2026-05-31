@@ -21,6 +21,7 @@ Discord ──(メッセージ)──▶ bot ──HTTP(OPENCODE_BASE_URL)──
 - **opencode-server**: 別デプロイ。`OPENCODE_BASE_URL` で到達する（このリポジトリの管理対象外）。
 - **会話の継続**: 1 Discord スレッド = 1 opencode セッション。対応表（`thread_id ↔ session_id`）を `.data/thread-sessions.json` に永続化するため、再起動後も会話が続く。
 - **画像の添付**: メッセージに添付された画像（本文なしの画像のみの投稿も可）をダウンロードし、base64 data URL に変換して opencode へ渡す。モデル側で画像入力が有効である必要がある。
+- **対話ゲート（permission / question）の橋渡し**: opencode は `bash` 実行やファイル編集の許可待ち（permission）や、ユーザへの選択式/自由入力の質問（question）に当たると、応答を返さずブロックする。bot はイベントストリーム（SSE）でこれらを受け取り、対応スレッドへ通知して返信で応答させる。詳細は[対話（許可・質問）への応答](#対話許可質問への応答)を参照。
 
 ### コンポーネント対応表
 
@@ -29,8 +30,48 @@ Discord ──(メッセージ)──▶ bot ──HTTP(OPENCODE_BASE_URL)──
 | `AgentService` | opencode SDK のラッパ（セッション作成・プロンプト送信） | `src/opencode/agent.ts`, `src/opencode/client.ts` |
 | `ThreadSessionStore` | `thread_id ↔ session_id` を JSON で永続化 | `src/store/threadSessionStore.ts` |
 | `ThreadAgent` | 上記2つを束ね「スレッド単位の会話」を提供 | `src/threadAgent.ts` |
+| `InteractionGate` | 対話要求（許可/質問, SSE）を購読しスレッドへ通知・返信で応答 | `src/discord/interactionGate.ts` |
 | Discord bot | チャンネル監視・スレッド応答 | `src/discord/bot.ts`, `src/discord/format.ts` |
 | 動作確認 CLI | opencode 単体の疎通テスト | `src/cli.ts` |
+
+---
+
+## 対話（許可・質問）への応答
+
+opencode には、実行を止めてユーザの入力を待つ**対話ゲートが 2 種類**ある。どちらも解決するまで**プロンプトの HTTP 応答を返さずブロックする**ため、クライアントが応答しないとセッションは止まったままになる。
+
+- **permission**: `bash` 実行やファイル編集など、サーバ側 `permission` 設定で許可が必要な操作。
+- **question**: agent がユーザに尋ねる選択式（場合により自由入力）の質問。
+
+bot はこれを次のように橋渡しする（実装: `src/discord/interactionGate.ts`）。
+
+1. 起動時にイベントストリーム（`GET /event`、SSE）を購読する。
+2. `permission.asked` / `question.asked` を受け取ると、`sessionID` から対応スレッドを逆引きし、そのスレッドへ内容を投稿する。
+3. ユーザがそのスレッドに**返信**すると、応答に変換してサーバへ返し（`POST /session/{id}/permissions/{permissionID}` または `POST /question/{id}/reply`）、ブロックを解除する。解除後は元の応答がそのままスレッドへ投稿される。
+
+対話待ちの間は、解釈できない返信も通常メッセージとして AI へ転送されず、待機中である旨を案内する（進行中の処理に二重で問い合わせないため）。要求が失効（タイムアウト等）した場合は、セッションがアイドルに戻った時点で保留を自動的に破棄する。
+
+### 許可（permission）への返信
+
+次の語（前後の空白は無視、英語も可）が応答として解釈される。
+
+| 返信 | 動作 | opencode への応答 |
+|---|---|---|
+| `承認` / `許可` / `approve` / `allow` / `ok` / `yes` | 今回だけ許可 | `once` |
+| `常に許可` / `常に承認` / `always` | 以後この種別は自動許可 | `always` |
+| `拒否` / `却下` / `deny` / `reject` / `no` | 実行しない | `reject` |
+
+### 質問（question）への返信
+
+通知には各選択肢が**番号付き**で並ぶ。返信は次のように解釈される。
+
+- **選択**: 選択肢の**番号**（`1`）または**ラベル文字列**（大小無視）で回答。
+- **複数選択可の質問**: 番号/ラベルを空白・カンマ区切りで複数指定（例 `1, 3`）。
+- **自由入力可の質問**: 選択肢に当てはまらない返信は、その本文がそのまま回答になる。
+- **複数の質問**: **1 行に 1 件ずつ**、質問の順に回答する。
+- **取り消し**: `拒否` / `キャンセル` / `reject` で質問への回答を取り消す。
+
+> 💡 そもそも許可を求める頻度を減らしたい場合は、**opencode-server 側**の `opencode.json` の `permission` 設定で、安全な操作を `allow`、危険な操作だけ `ask`/`deny` に振り分けるとよい（設定キー: `edit` / `bash` / `webfetch` / `question` など。`bash` はコマンドのパターン別指定も可能）。
 
 ---
 
