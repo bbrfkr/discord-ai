@@ -11,8 +11,9 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends git ca-certificates curl gnupg \
   && rm -rf /var/lib/apt/lists/*
 
-# AI に git の pull/commit/push を任せるため GitHub CLI を入れる。
-# 公式 apt リポジトリから導入する（slim には gh が含まれないため）。
+# GitHub CLI（gh）を入れる。gh の API 認証も git と同じ n8n ブローカー経由の短命トークンで行う
+# （`gh pr create` 等を AI に任せる）。実体は /usr/bin/gh に入り、下のラッパー /usr/local/bin/gh が
+# /tmp/n8n-gh-token を読んで GH_TOKEN として渡す。公式 apt リポジトリから導入する（slim には gh が含まれない）。
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     | gpg --dearmor -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
   && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
@@ -22,19 +23,33 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
   && apt-get install -y --no-install-recommends gh \
   && rm -rf /var/lib/apt/lists/*
 
+# gh の API 認証も n8n ブローカー経由の短命トークンで行うための薄いラッパー。
+# /usr/local/bin は PATH 上で /usr/bin より優先されるため、`gh` 実行時は本ラッパーが先に呼ばれ、
+# /tmp/n8n-gh-token を GH_TOKEN にセットしてから実体 /usr/bin/gh を exec する（n8n は叩かない）。
+# 発行/失効は git と同様 opencode プラグイン (plugins/github-token.js) が担当する。
+COPY gh /usr/local/bin/gh
+RUN chmod +x /usr/local/bin/gh
+
 # マウントした vault の .git はホスト側 uid(1000) 所有だが、コンテナは root(0) で動くため
 # git の "dubious ownership" 保護で rev-parse が失敗し、worktree が / に落ちる。
 # 全ディレクトリを信頼してこれを回避する（実行 uid に依存せず効くよう --system で /etc/gitconfig に書く）。
 RUN git config --system --add safe.directory '*'
 
-# HTTPS の push/pull で gh を credential helper に使う（`gh auth setup-git` 相当）。
-# token はビルド時には不要で、実行時に GH_TOKEN 環境変数から gh が読み取る。
-# 空 helper でリセットしてから gh を追加するのが gh の生成する形式。
+# HTTPS の push/pull の認証は n8n ブローカー経由の短命トークンで行う（静的 GH_TOKEN は使わない）。
+# - opencode プラグイン (plugins/github-token.js) が git の network 操作の直前に n8n へ
+#   POST /github/token して短命トークンを /tmp/n8n-gh-token に発行し、完了後 POST /github/revoke で失効する。
+# - 下の credential helper (git-credential-n8n) は、そのファイルを読んで git に渡すだけの薄い受け渡し役。
+# 空 helper でリセットしてから自前 helper を追加する（gh が生成する形式に倣う）。
 # コミット著者情報（user.name/email）は image に焼かず、compose で GIT_AUTHOR_*/GIT_COMMITTER_* env を注入する。
-RUN git config --system credential.https://github.com.helper "" \
-  && git config --system --add credential.https://github.com.helper "!/usr/bin/gh auth git-credential"
+COPY git-credential-n8n /usr/local/bin/git-credential-n8n
+RUN chmod +x /usr/local/bin/git-credential-n8n \
+  && git config --system credential.https://github.com.helper "" \
+  && git config --system --add credential.https://github.com.helper "/usr/local/bin/git-credential-n8n"
 
 RUN npm install -g opencode-ai && npm cache clean --force
+
+# 発行/失効を担う opencode プラグインを global plugin ディレクトリへ配置（起動時に自動ロード）。
+COPY plugins/ /root/.config/opencode/plugins/
 
 # セッション DB 等のデータ保存先。compose で volume をマウントして永続化する。
 ENV XDG_DATA_HOME=/data

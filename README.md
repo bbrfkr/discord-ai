@@ -57,6 +57,8 @@ cp .env.example .env
 | `DISCORD_TARGET_CHANNEL_ID` | ✅ | 監視対象チャンネル ID（開発者モードON → 右クリック → IDをコピー） |
 | `LITELLM_BASE_URL` | ✅(compose) | OpenAI 互換エンドポイント（例 `https://.../v1`） |
 | `LITELLM_API_KEY` | ✅(compose) | 上記の API キー |
+| `N8N_WEBHOOK_BASE_URL` | ✅(compose) | git 認証用 n8n ブローカーの Webhook 親 URL（`/github/token`・`/github/revoke` の手前、`/webhook` まで） |
+| `GIT_USER_NAME` / `GIT_USER_EMAIL` | ✅(compose) | AI が作るコミットの著者情報 |
 | `OPENCODE_BASE_URL` | – | ローカル実行時の opencode 接続先。compose では自動上書き |
 | `OPENCODE_PROVIDER_ID` / `OPENCODE_MODEL_ID` | – | 使用モデルの上書き。未指定なら `opencode.json` の既定 |
 
@@ -176,9 +178,32 @@ docker compose exec opencode node -e "fetch('http://127.0.0.1:4096/global/health
 
 ---
 
+## GitHub 連携（n8n ブローカー経由）
+
+AI に git の clone/pull/push を任せる際の認証は、**静的トークンをコンテナに持たせず**、n8n ブローカー
+（`github-token` ワークフロー）が都度発行する**短命トークン（GitHub App installation token・約1時間）**で行う。
+長命の秘密（App 秘密鍵）は n8n 側にだけ置き、opencode 側には短命トークンしか流さない設計。
+
+```
+git push / gh ──▶ opencode プラグイン(plugins/github-token.js)
+                   ├ pre  : POST /github/token  → /tmp/n8n-gh-token に短命トークンを発行
+                   │        （git は credential helper /usr/local/bin/git-credential-n8n 経由、
+                   │          gh は薄いラッパー /usr/local/bin/gh が GH_TOKEN として読み取り認証）
+                   └ post : POST /github/revoke → 失効・ファイル削除（コマンド完了直後）
+```
+
+- 発行・失効は **git の network 操作（push/pull/fetch/clone/ls-remote）と gh コマンド**を対象に自動で走る。
+  git 以外（commit/status 等）や gh 以外の bash では何もしない。
+- `gh`（GitHub CLI）も同じ仕組みで認証される。`gh` 実行時、薄いラッパー（`/usr/local/bin/gh`、PATH で実体
+  `/usr/bin/gh` より優先）が `/tmp/n8n-gh-token` を読んで `GH_TOKEN` にセットしてから実体 gh を呼ぶ。
+- 必要な設定は `N8N_WEBHOOK_BASE_URL` のみ（GitHub の秘密情報は不要）。
+- トークンは **チャット応答・ログ・コマンド文字列に出さない**。失効に失敗しても GitHub 仕様の1時間自動失効が backstop。
+- credential helper / gh ラッパーは `/tmp/n8n-gh-token` を読むだけの薄い受け渡し役で、n8n は一切叩かない（発行/失効はプラグインが担当）。
+
 ## セキュリティ上の注意
 
 - `.env` と `.data/` は `.gitignore` 済み。**API キー・Bot トークンは絶対にコミットしない。**
+- **GitHub の長命トークン/App 秘密鍵を opencode コンテナや `.env` に置かない**（git 認証は上記の n8n ブローカー経由の短命トークンで行う）。
 - `opencode/opencode.json` はキーを直書きせず `{env:...}` 参照のみ（リポジトリにもイメージにも秘密情報を残さない）。
 - opencode サーバはポートを公開せず、compose 内部ネットワークからのみ到達可能（外部公開する場合は `OPENCODE_SERVER_PASSWORD` 等の認証を検討）。
 - Bot トークンが漏れた場合は Developer Portal で即 **Reset Token**。
