@@ -5,6 +5,9 @@ import {
   type OpencodeEvent,
   type PermissionRequest,
   type PermissionResponse,
+  type QuestionInfo,
+  type QuestionOption,
+  type QuestionRequest,
 } from "./opencode/agent.js";
 import { ThreadSessionStore } from "./store/threadSessionStore.js";
 
@@ -13,6 +16,9 @@ export type {
   OpencodeEvent,
   PermissionRequest,
   PermissionResponse,
+  QuestionInfo,
+  QuestionOption,
+  QuestionRequest,
 };
 
 export interface ThreadAgentOptions extends AgentServiceOptions {
@@ -78,6 +84,16 @@ export class ThreadAgent {
     response: PermissionResponse,
   ): Promise<void> {
     return this.agent.respondPermission(sessionId, permissionID, response);
+  }
+
+  /** 保留中の質問に回答する（質問順に、選択ラベルの配列の配列）。 */
+  replyQuestion(requestID: string, answers: string[][]): Promise<void> {
+    return this.agent.replyQuestion(requestID, answers);
+  }
+
+  /** 保留中の質問を取り消す。 */
+  rejectQuestion(requestID: string): Promise<void> {
+    return this.agent.rejectQuestion(requestID);
   }
 
   /** スレッドの紐づけを解除する（アーカイブ/削除時など）。 */

@@ -14,14 +14,14 @@ import {
 } from "discord.js";
 import { ThreadAgent, type AttachmentInput } from "../threadAgent.js";
 import { deriveThreadName, splitForDiscord } from "./format.js";
-import { PermissionGate } from "./permissionGate.js";
+import { InteractionGate } from "./interactionGate.js";
 
 const token = requireEnv("DISCORD_TOKEN");
 const targetChannelId = requireEnv("DISCORD_TARGET_CHANNEL_ID");
 
 const threadAgent = new ThreadAgent();
-// opencode の許可ゲートを Discord の返信コマンドへ橋渡しする（ask のブロック解除）。
-const permissionGate = new PermissionGate(threadAgent);
+// opencode の対話ゲート（許可/質問）を Discord の返信へ橋渡しする（ask のブロック解除）。
+const interactionGate = new InteractionGate(threadAgent);
 
 const client = new Client({
   intents: [
@@ -35,9 +35,9 @@ const client = new Client({
 client.once(Events.ClientReady, (c) => {
   console.log(`[discord] logged in as ${c.user.tag}`);
   console.log(`[discord] watching channel: ${targetChannelId}`);
-  // 許可要求の購読を開始（client 経由で通知先スレッドを取得する）。
-  permissionGate.start(c);
-  console.log("[discord] permission gate started");
+  // 対話要求（許可/質問）の購読を開始（client 経由で通知先スレッドを取得する）。
+  interactionGate.start(c);
+  console.log("[discord] interaction gate started");
 });
 
 client.on(Events.MessageCreate, async (message) => {
@@ -70,10 +70,10 @@ client.on(Events.MessageCreate, async (message) => {
 
     // ケースB: 対象チャンネル配下のスレッド内での投稿 → 同じセッションで継続。
     if (channel.isThread() && channel.parentId === targetChannelId) {
-      // 許可待ちのスレッドでは、返信を許可応答（承認/拒否）として解釈する。
+      // 対話待ち（許可/質問）のスレッドでは、返信をその応答として解釈する。
       // 解除すると進行中の ask() が答えを返し、既存経路でスレッドへ投稿される。
-      if (permissionGate.hasPending(channel.id)) {
-        const result = await permissionGate.handleReply(
+      if (interactionGate.hasPending(channel.id)) {
+        const result = await interactionGate.handleReply(
           channel.id,
           message.content,
         );

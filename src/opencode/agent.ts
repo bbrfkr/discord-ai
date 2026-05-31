@@ -1,4 +1,8 @@
-import { createClient, type OpencodeClient } from "./client.js";
+import {
+  createClient,
+  resolveBaseUrl,
+  type OpencodeClient,
+} from "./client.js";
 
 /** prompt 時に指定するモデル（providerID / modelID）。未指定ならサーバ既定。 */
 export interface ModelRef {
@@ -48,6 +52,39 @@ export interface OpencodeEvent {
   properties?: Record<string, unknown>;
 }
 
+/** 質問の選択肢。 */
+export interface QuestionOption {
+  label: string;
+  description: string;
+}
+
+/** 単一の質問。 */
+export interface QuestionInfo {
+  question: string;
+  /** 短いラベル（30 文字以内）。 */
+  header: string;
+  options: QuestionOption[];
+  /** 複数選択可か。 */
+  multiple?: boolean;
+  /** 選択肢以外の自由入力を許すか。 */
+  custom?: boolean;
+}
+
+/**
+ * opencode が agent からユーザへ質問する際に送るイベント（type: "question.asked"）。
+ *
+ * 注意: permission と異なり @opencode-ai/sdk には question 用の型もメソッドも存在しない。
+ * イベントは SSE 生 JSON としてそのまま流れてくるので type 文字列で判定し、応答は
+ * 生 fetch（replyQuestion / rejectQuestion）で /question/{id}/reply・/reject を叩く。
+ */
+export interface QuestionRequest {
+  /** que_… 形式。応答時の requestID として使う。 */
+  id: string;
+  /** ses_… 形式。どのセッション（=スレッド）の質問か。 */
+  sessionID: string;
+  questions: QuestionInfo[];
+}
+
 export interface AgentServiceOptions {
   /** 接続先。未指定なら env / 既定値。 */
   baseUrl?: string;
@@ -65,8 +102,11 @@ export interface AgentServiceOptions {
 export class AgentService {
   private readonly client: OpencodeClient;
   private readonly model?: ModelRef;
+  /** SDK が未提供のエンドポイント（question 応答）を生 fetch で叩くための接続先。 */
+  private readonly baseUrl: string;
 
   constructor(options: AgentServiceOptions = {}) {
+    this.baseUrl = resolveBaseUrl(options.baseUrl);
     this.client = createClient(options.baseUrl);
     this.model = options.model ?? resolveModelFromEnv();
   }
@@ -147,6 +187,32 @@ export class AgentService {
       body: { response },
     });
     unwrap(res);
+  }
+
+  /**
+   * 保留中の質問に回答する。answers は質問順に、各要素が「選択したラベル（自由入力時はその文字列）」の配列。
+   * SDK 未提供のため生 fetch で /question/{requestID}/reply を叩く。
+   */
+  async replyQuestion(requestID: string, answers: string[][]): Promise<void> {
+    await this.postJson(`/question/${requestID}/reply`, { answers });
+  }
+
+  /** 保留中の質問を取り消す（SDK 未提供のため生 fetch）。 */
+  async rejectQuestion(requestID: string): Promise<void> {
+    await this.postJson(`/question/${requestID}/reject`, {});
+  }
+
+  /** baseUrl 配下へ JSON を POST し、非 2xx は本文付きで投げる。 */
+  private async postJson(path: string, body: unknown): Promise<void> {
+    const res = await fetch(`${this.baseUrl}${path}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`opencode API error (${res.status} ${path}): ${text}`);
+    }
   }
 }
 
