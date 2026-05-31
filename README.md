@@ -1,4 +1,4 @@
-# discord-bot
+# discord-ai-bot
 
 Discord の特定チャンネルへの投稿を起点にスレッドを立て、[opencode](https://opencode.ai) の AI agent が応答する bot です。
 opencode サーバー本体は同梱せず、別デプロイの **[opencode-server](https://github.com/bbrfkr/opencode-server)** に `OPENCODE_BASE_URL` で HTTP 接続します。
